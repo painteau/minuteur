@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Minuteur</title>
+<title>Minuteur TV</title>
 <style>
   :root {
     --bg: #0f172a;
@@ -11,90 +11,63 @@
     --accent: #3b82f6;
     --accent-hover: #2563eb;
     --muted: #94a3b8;
+    --bar-bg: #1f2937;
+    --bar-fg: #22c55e;
   }
-
   html, body {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: system-ui, sans-serif;
-    display: grid;
-    place-items: center;
+    margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    display: grid; place-items: center;
   }
-
-  .centered {
-    text-align: center;
-  }
-
-  .buttons, .controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    justify-content: center;
-    align-items: center;
-  }
-
-  .buttons {
-    flex-direction: column;
-    height: 100vh;
-    justify-content: center;
-  }
-
-  .buttons.hidden {
-    display: none;
-  }
-
-  .controls {
-    margin-top: 1rem;
-  }
-
+  .centered { text-align: center; }
+  .buttons, .controls { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; align-items: center; }
+  .buttons { flex-direction: column; height: 100vh; justify-content: center; }
+  .buttons.hidden { display: none; }
+  .controls { margin-top: 1rem; }
   button {
-    background: var(--accent);
-    color: white;
-    border: none;
-    padding: 1rem 2rem;
-    font-size: 1.2rem;
-    border-radius: .75rem;
-    cursor: pointer;
-    transition: background 0.2s ease;
+    background: var(--accent); color: #fff; border: 0; padding: 1rem 2rem; font-size: 1.2rem; border-radius: .75rem; cursor: pointer;
+    transition: background .2s ease;
   }
+  button:hover { background: var(--accent-hover); }
+  button.secondary { background: #334155; }
+  button.secondary:hover { background: #1e293b; }
 
-  button:hover {
-    background: var(--accent-hover);
+  #timerContainer {
+    display: none; height: 100vh; width: min(1600px, 96vw);
+    display: none; /* sera activé en JS */
+    margin-inline: auto;
   }
-
-  button.secondary {
-    background: #334155;
-  }
-
-  button.secondary:hover {
-    background: #1e293b;
-  }
+  #timerContainer.on { display: flex; flex-direction: column; justify-content: center; align-items: center; }
 
   #timer {
-    font-size: clamp(3rem, 12vw, 12rem);
+    font-size: clamp(4rem, 20vw, 25rem);
+    font-weight: 800;
     font-variant-numeric: tabular-nums;
+    line-height: 1.08;
+    letter-spacing: .02em;
+    text-shadow: 0 2px 10px rgba(0,0,0,.25);
+  }
+  #status { color: var(--muted); margin-top: 1rem; font-size: clamp(1rem, 2vw, 1.25rem); }
+
+  /* Barre de progression */
+  .progress {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    height: clamp(10px, 2.2vh, 18px);
+    background: var(--bar-bg);
+  }
+  .progress__fill {
+    height: 100%; width: 0%;
+    background: var(--bar-fg);
+    transition: width .2s linear;
   }
 
-  #status {
-    color: var(--muted);
-    margin-top: 1rem;
-  }
-
-  .flash {
-    animation: flash 800ms ease-in-out 4;
-  }
-
-  @keyframes flash {
-    0%, 100% { color: var(--fg); }
-    50% { color: #22c55e; }
-  }
+  .flash { animation: flash 800ms ease-in-out 4; }
+  @keyframes flash { 0%,100%{color:var(--fg)} 50%{color:#22c55e} }
 </style>
 </head>
 <body>
 
+<!-- Écran d’accueil : boutons centraux -->
 <div class="buttons centered" id="buttonGroup">
   <button data-minutes="30">30 min</button>
   <button data-minutes="45">45 min</button>
@@ -104,7 +77,8 @@
   <button data-minutes="180">3 h</button>
 </div>
 
-<div class="centered" id="timerContainer" style="display: none;">
+<!-- Écran minuteur plein écran -->
+<div class="centered" id="timerContainer">
   <div id="timer">00:00</div>
   <div id="status">En attente…</div>
   <div class="controls">
@@ -112,6 +86,11 @@
     <button class="secondary" id="resetBtn" disabled>Réinitialiser</button>
     <button class="secondary" id="fsBtn">Plein écran</button>
   </div>
+</div>
+
+<!-- Barre de progression globale -->
+<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Progression du minuteur">
+  <div class="progress__fill" id="progressFill"></div>
 </div>
 
 <script>
@@ -124,24 +103,23 @@
   const buttonsContainer = document.getElementById('buttonGroup');
   const timerContainer = document.getElementById('timerContainer');
   const buttons = document.querySelectorAll('#buttonGroup button');
+  const bar = document.getElementById('progressFill');
+  const barWrapper = document.querySelector('.progress');
 
-  let endTs = 0, remainingMs = 0, paused = false, rafId = null;
+  let endTs = 0, remainingMs = 0, paused = false, rafId = null, totalMs = 0;
 
   function beep() {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const o = ctx.createOscillator();
       const g = ctx.createGain();
-      o.type = 'sine';
-      o.connect(g); g.connect(ctx.destination);
+      o.type = 'sine'; o.connect(g); g.connect(ctx.destination);
       const now = ctx.currentTime;
       g.gain.setValueAtTime(0.0001, now);
       g.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
       o.frequency.setValueAtTime(440, now);
       o.frequency.exponentialRampToValueAtTime(880, now + 0.35);
-      o.start(now);
-      o.stop(now + 0.5);
-      o.onended = () => ctx.close();
+      o.start(now); o.stop(now + 0.5); o.onended = () => ctx.close();
     } catch {}
   }
 
@@ -151,38 +129,48 @@
     const h = Math.floor(totalSec / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
     const s = totalSec % 60;
-    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` :
-                   `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+                 : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function updateProgress() {
+    if (!totalMs || totalMs <= 0) return;
+    const elapsed = Math.max(0, totalMs - Math.max(0, remainingMs));
+    const pct = Math.min(100, Math.max(0, (elapsed / totalMs) * 100));
+    bar.style.width = pct + '%';
+    barWrapper.setAttribute('aria-valuenow', Math.round(pct));
   }
 
   function render() {
     if (paused) {
       timerEl.textContent = format(remainingMs);
+      updateProgress();
       rafId = requestAnimationFrame(render);
       return;
     }
     const msLeft = endTs - performance.now();
     remainingMs = msLeft;
     timerEl.textContent = format(msLeft);
-    if (msLeft <= 0) {
-      stop(true);
-      return;
-    }
+    updateProgress();
+    if (msLeft <= 0) { stop(true); return; }
     rafId = requestAnimationFrame(render);
   }
 
   function start(minutes) {
+    const ms = minutes * 60000;
+    totalMs = ms;
     cancelAnimationFrame(rafId);
-    endTs = performance.now() + minutes * 60000;
-    remainingMs = minutes * 60000;
+    endTs = performance.now() + ms;
+    remainingMs = ms;
     paused = false;
     timerEl.classList.remove('flash');
     statusEl.textContent = `En cours (${minutes} min)…`;
     buttonsContainer.classList.add('hidden');
-    timerContainer.style.display = 'block';
+    timerContainer.classList.add('on');
     pauseBtn.disabled = false;
     resetBtn.disabled = false;
     pauseBtn.textContent = 'Pause';
+    bar.style.width = '0%';
     rafId = requestAnimationFrame(render);
   }
 
@@ -194,12 +182,15 @@
       timerEl.textContent = 'Terminé';
       statusEl.textContent = 'Minuteur terminé.';
       timerEl.classList.add('flash');
+      bar.style.width = '100%';
       beep(); setTimeout(beep, 400); setTimeout(beep, 800);
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
     } else {
       timerEl.textContent = '00:00';
       statusEl.textContent = 'Réinitialisé.';
       timerEl.classList.remove('flash');
-      timerContainer.style.display = 'none';
+      bar.style.width = '0%';
+      timerContainer.classList.remove('on');
       buttonsContainer.classList.remove('hidden');
     }
   }
@@ -218,16 +209,50 @@
     }
   }
 
-  // Event listeners
+  // Parsing du paramètre d’URL ?t=
+  function parseDurationParam(value) {
+    if (!value) return null;
+    value = String(value).trim().toLowerCase();
+
+    // nombre simple = minutes
+    if (/^\d+$/.test(value)) return parseInt(value, 10);
+
+    // format hh:mm[:ss]
+    if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(value)) {
+      const parts = value.split(':').map(Number);
+      const h = parts[0] || 0, m = parts[1] || 0, s = parts[2] || 0;
+      return Math.round(h * 60 + m + s / 60);
+    }
+
+    // expressions "1h30", "1h", "90m", "45min"
+    let minutes = 0; let matched = false;
+    const hMatch = value.match(/(\d+(?:\.\d+)?)\s*h/);
+    if (hMatch) { minutes += parseFloat(hMatch[1]) * 60; matched = true; }
+    const mMatch = value.match(/(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b/);
+    if (mMatch) { minutes += parseFloat(mMatch[1]); matched = true; }
+    if (matched && minutes > 0) return Math.round(minutes);
+
+    return null;
+  }
+
+  // Événements
   buttons.forEach(btn =>
-    btn.addEventListener('click', () => start(parseInt(btn.dataset.minutes)))
+    btn.addEventListener('click', () => start(parseInt(btn.dataset.minutes, 10)))
   );
   pauseBtn.addEventListener('click', togglePause);
   resetBtn.addEventListener('click', () => stop(false));
   fsBtn.addEventListener('click', () => {
     const el = document.documentElement;
-    if (!document.fullscreenElement) el.requestFullscreen();
-    else document.exitFullscreen();
+    if (!document.fullscreenElement) el.requestFullscreen().catch(()=>{});
+    else document.exitFullscreen().catch(()=>{});
+  });
+
+  // Démarrage auto via ?t=…
+  window.addEventListener('load', () => {
+    const url = new URL(window.location.href);
+    const tParam = url.searchParams.get('t');
+    const minutes = parseDurationParam(tParam);
+    if (minutes && minutes > 0) start(minutes);
   });
 })();
 </script>
