@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Minuteurs rapides</title>
+<style>
+  :root {
+    --bg: #0f172a;      /* bleu nuit */
+    --fg: #e5e7eb;      /* texte clair */
+    --accent: #3b82f6;  /* bleu bouton */
+    --accent-2: #1e40af;
+    --muted: #94a3b8;
+  }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  }
+
+  .wrap {
+    min-height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 2rem;
+  }
+
+  header, footer {
+    padding: 1rem clamp(1rem, 4vw, 2rem);
+    text-align: center;
+    color: var(--muted);
+    font-size: clamp(.9rem, 2.5vw, 1rem);
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    justify-content: center;
+    padding: 0 clamp(1rem, 4vw, 2rem);
+  }
+
+  button {
+    cursor: pointer;
+    border: 0;
+    padding: .85rem 1.1rem;
+    border-radius: .75rem;
+    font-weight: 600;
+    font-size: clamp(.95rem, 2.8vw, 1.05rem);
+    background: var(--accent);
+    color: white;
+    transition: transform .05s ease, background .15s ease;
+  }
+  button:hover { background: #2563eb; }
+  button:active { transform: translateY(1px); }
+  button.secondary {
+    background: #334155;
+  }
+  button.secondary:hover { background: #1f2937; }
+
+  .screen {
+    display: grid;
+    place-items: center;
+    text-align: center;
+    padding: 0 clamp(1rem, 4vw, 2rem);
+  }
+
+  .timer {
+    font-variant-numeric: tabular-nums lining-nums;
+    /* taille responsive, borne min/max + ajustée à la largeur */
+    font-size: clamp(3rem, 12vw, 12rem);
+    line-height: 1.1;
+    letter-spacing: .02em;
+  }
+
+  .status {
+    margin-top: .5rem;
+    color: var(--muted);
+    font-size: clamp(.9rem, 2.5vw, 1rem);
+  }
+
+  .row {
+    display: flex;
+    gap: .5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: .75rem;
+  }
+
+  .flash {
+    animation: flash 800ms ease-in-out 4;
+  }
+  @keyframes flash {
+    0%, 100% { color: var(--fg); }
+    50% { color: #22c55e; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>Choisissez une durée :</header>
+
+    <div class="controls" id="presetRow" aria-label="Préréglages">
+      <button data-minutes="30">30 min</button>
+      <button data-minutes="45">45 min</button>
+      <button data-minutes="60">1 h</button>
+      <button data-minutes="90">1 h 30</button>
+      <button data-minutes="120">2 h</button>
+      <button data-minutes="180">3 h</button>
+    </div>
+
+    <main class="screen">
+      <div class="timer" id="timer" aria-live="polite">00:00</div>
+      <div class="status" id="status">En attente…</div>
+      <div class="row">
+        <button class="secondary" id="pauseBtn" disabled>Pause</button>
+        <button class="secondary" id="resetBtn" disabled>Réinitialiser</button>
+        <button class="secondary" id="fsBtn" title="Plein écran">Plein écran</button>
+      </div>
+    </main>
+
+    <footer>Fonctionne hors‑ligne. Le son retentit à la fin.</footer>
+  </div>
+
+<script>
+(() => {
+  const timerEl = document.getElementById('timer');
+  const statusEl = document.getElementById('status');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const fsBtn = document.getElementById('fsBtn');
+  const presets = document.querySelectorAll('#presetRow button[data-minutes]');
+  let endTs = 0;
+  let remainingMs = 0;
+  let rafId = null;
+  let paused = false;
+  let wakeLock = null;
+
+  // WebAudio beep (440 Hz -> 880 Hz)
+  function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.connect(g); g.connect(ctx.destination);
+      const now = ctx.currentTime;
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+      o.frequency.setValueAtTime(440, now);
+      o.frequency.exponentialRampToValueAtTime(880, now + 0.35);
+      o.start(now);
+      o.stop(now + 0.5);
+      o.onended = () => ctx.close();
+    } catch {}
+  }
+
+  function format(ms) {
+    ms = Math.max(0, ms);
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${String(h)}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function render(now) {
+    if (paused) {
+      timerEl.textContent = format(remainingMs);
+      rafId = requestAnimationFrame(render);
+      return;
+    }
+    const msLeft = endTs - performance.now();
+    remainingMs = msLeft;
+    timerEl.textContent = format(msLeft);
+    if (msLeft <= 0) {
+      stop(true);
+      return;
+    }
+    rafId = requestAnimationFrame(render);
+  }
+
+  function start(minutes) {
+    cancelAnimationFrame(rafId);
+    const durationMs = minutes * 60 * 1000;
+    endTs = performance.now() + durationMs;
+    remainingMs = durationMs;
+    paused = false;
+    timerEl.classList.remove('flash');
+    statusEl.textContent = `En cours (${minutes} min)…`;
+    setButtonsDisabled(true);
+    pauseBtn.disabled = false;
+    resetBtn.disabled = false;
+    pauseBtn.textContent = 'Pause';
+    keepAwake(true).catch(()=>{});
+    rafId = requestAnimationFrame(render);
+  }
+
+  function stop(done=false) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+    setButtonsDisabled(false);
+    pauseBtn.disabled = true;
+    resetBtn.disabled = true;
+    keepAwake(false).catch(()=>{});
+    if (done) {
+      timerEl.textContent = 'Terminé';
+      statusEl.textContent = 'Minuteur terminé.';
+      timerEl.classList.add('flash');
+      // 3 bips courts
+      beep(); setTimeout(beep, 400); setTimeout(beep, 800);
+      // vibration (si dispo)
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    } else {
+      statusEl.textContent = 'Réinitialisé.';
+      timerEl.textContent = '00:00';
+      timerEl.classList.remove('flash');
+    }
+  }
+
+  function togglePause() {
+    if (pauseBtn.disabled) return;
+    if (!paused) {
+      paused = true;
+      remainingMs = Math.max(0, endTs - performance.now());
+      pauseBtn.textContent = 'Reprendre';
+      statusEl.textContent = 'En pause.';
+    } else {
+      paused = false;
+      endTs = performance.now() + remainingMs;
+      pauseBtn.textContent = 'Pause';
+      statusEl.textContent = 'En cours…';
+    }
+  }
+
+  function setButtonsDisabled(disabled) {
+    presets.forEach(b => b.disabled = disabled);
+  }
+
+  async function keepAwake(enable) {
+    if ('wakeLock' in navigator) {
+      try {
+        if (enable && !wakeLock) {
+          wakeLock = await navigator.wakeLock.request('screen');
+        } else if (!enable && wakeLock) {
+          await wakeLock.release();
+          wakeLock = null;
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Events
+  presets.forEach(btn => {
+    btn.addEventListener('click', () => start(parseInt(btn.dataset.minutes, 10)));
+  });
+  pauseBtn.addEventListener('click', togglePause);
+  resetBtn.addEventListener('click', () => stop(false));
+
+  fsBtn.addEventListener('click', async () => {
+    const el = document.documentElement;
+    try {
+      if (!document.fullscreenElement) await el.requestFullscreen();
+      else await document.exitFullscreen();
+    } catch {}
+  });
+
+  // Nettoyage wake lock si l'onglet perd la visibilité
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' && wakeLock) {
+      keepAwake(false);
+    }
+  });
+})();
+</script>
+</body>
+</html>
