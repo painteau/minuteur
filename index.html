@@ -14,7 +14,12 @@
     --bar-bg: #1f2937;
     --bar-fg: #22c55e;
   }
+  /* Optionnel pour Safari/WebKit */
+body::-webkit-scrollbar {
+  display: none;
+}
   html, body {
+    overflow: hidden;
     margin: 0; height: 100%; background: var(--bg); color: var(--fg);
     font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
     display: grid; place-items: center;
